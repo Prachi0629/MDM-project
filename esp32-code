@@ -1,0 +1,260 @@
+#include <Wire.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <TinyGPSPlus.h>
+#include <math.h>
+#include <time.h>
+
+// ================= MPU6050 =================
+const int MPU_ADDR = 0x68;
+bool fallTriggered = false;
+int16_t AcX, AcY, AcZ;
+float prevAccel = 0;
+bool freeFallDetected = false;
+unsigned long freeFallTime = 0;
+
+
+// ================= GPS =================
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(2);
+
+// ================= WiFi =================
+const char* ssid = "realme P4 5G A13C";
+const char* password = "prachisj182900";
+
+// ================= TIME =================
+String getTimeStamp() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) return "Time not available";
+
+  char buffer[30];
+  strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
+  return String(buffer);
+}
+
+// ================= GPS =================
+String getLocation() {
+
+  unsigned long start = millis();
+
+  // Read GPS data for 2 seconds
+  while (millis() - start < 2000) {
+    while (gpsSerial.available()) {
+      gps.encode(gpsSerial.read());
+    }
+  }
+
+  if (gps.location.isValid()) {
+    return "https://maps.google.com/?q=" +
+           String(gps.location.lat(), 6) + "," +
+           String(gps.location.lng(), 6);
+  }
+
+  return "Location not available";
+}
+
+// ================= URL ENCODE =================
+String urlEncode(String str) {
+  String encoded = "";
+  char c;
+  char code0;
+  char code1;
+
+  for (int i = 0; i < str.length(); i++) {
+    c = str.charAt(i);
+
+    if (isalnum(c)) {
+      encoded += c;
+    } else {
+      encoded += '%';
+      code0 = (c >> 4) & 0xF;
+      code1 = c & 0xF;
+
+      encoded += (code0 > 9) ? code0 - 10 + 'A' : code0 + '0';
+      encoded += (code1 > 9) ? code1 - 10 + 'A' : code1 + '0';
+    }
+  }
+  return encoded;
+}
+
+// ================= SEND TO SERVER =================
+
+
+void sendToServer(String message) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("ERROR: WiFi not connected");
+    return;
+  }
+
+  HTTPClient http;
+  String url = "http://10.36.20.45:5000/api/alert";
+
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(15000);
+
+  String latValue = gps.location.isValid()
+      ? String(gps.location.lat(), 6)
+      : "null";
+
+  String lonValue = gps.location.isValid()
+      ? String(gps.location.lng(), 6)
+      : "null";
+
+  String safeMessage = message;
+  safeMessage.replace("\\", "\\\\");
+  safeMessage.replace("\"", "\\\"");
+  safeMessage.replace("\n", " ");
+
+  String timestamp = getTimeStamp();
+  timestamp.replace("\"", "\\\"");
+
+  String json = "{\"status\":\"FALL DETECTED\",";
+  json += "\"message\":\"" + safeMessage + "\",";
+  json += "\"timestamp\":\"" + timestamp + "\",";
+  json += "\"lat\":" + latValue + ",";
+  json += "\"lon\":" + lonValue + "}";
+
+  Serial.println("Sending alert to: " + url);
+  Serial.println("Payload: " + json);
+
+  int code = http.POST(json);
+
+  Serial.print("HTTP response code: ");
+  Serial.println(code);
+
+  if (code > 0) {
+    Serial.println("Server response: " + http.getString());
+  } else {
+    Serial.println("HTTP request failed: "
+                   + http.errorToString(code));
+  }
+
+  http.end();
+}
+
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(21, 22);
+
+  // MPU wake
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B);
+  Wire.write(0);
+  Wire.endTransmission(true);
+
+  // GPS init
+  gpsSerial.begin(9600, SERIAL_8N1, 16, 17);
+
+  // WiFi connect
+  Serial.print("Connecting WiFi");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nConnected! IP: " + WiFi.localIP().toString());
+
+  // Time sync
+  configTime(19800, 0, "pool.ntp.org");
+
+  Serial.println("System Ready 🚀");
+}
+
+// ================= LOOP =================
+void loop() {
+
+  // Read MPU6050
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 6, true);
+
+  AcX = Wire.read() << 8 | Wire.read();
+  AcY = Wire.read() << 8 | Wire.read();
+  AcZ = Wire.read() << 8 | Wire.read();
+
+  float accel = sqrt(AcX * AcX + AcY * AcY + AcZ * AcZ);
+  float delta = abs(accel - prevAccel);
+
+  Serial.print("Acceleration: ");
+  Serial.print(accel);
+  Serial.print(" | Delta: ");
+  Serial.println(delta);
+
+  // ================= FALL DETECTION (YOUR OLD ONE) =================
+  if ((accel < 8000 || accel > 20000) && delta > 5000 && !fallTriggered) {
+
+    fallTriggered = true;
+
+    Serial.println("⚠ FALL DETECTED!");
+
+    String location = getLocation();
+
+    String msg = "FALL ALERT! ";
+    msg += "Time: " + getTimeStamp() + " ";
+
+    if (location != "Location not available") {
+      msg += "Location: " + location;
+    } else {
+      msg += "Location not available (GPS weak)";
+    }
+
+    sendToServer(msg);
+
+    delay(15000);
+  }
+
+  if (delta < 3000) {
+    fallTriggered = false;
+  }
+
+  // ================= NEW FREE FALL LOGIC =================
+
+  // Step 1: Detect free fall
+  if (accel < 5000 && !freeFallDetected) {
+    freeFallDetected = true;
+    freeFallTime = millis();
+    Serial.println("Free fall detected...");
+  }
+
+  // Step 2: Detect impact
+  if (freeFallDetected && (millis() - freeFallTime < 1500)) {
+
+    if (accel > 20000) {
+      Serial.println("⚠ FALL DETECTED (impact confirmed)");
+
+      String location = getLocation();
+
+      String msg = "FALL ALERT! ";
+      msg += "Time: " + getTimeStamp() + " ";
+
+      if (location != "Location not available") {
+        msg += "Location: " + location;
+      } else {
+        msg += "Location not available";
+      }
+
+      sendToServer(msg);
+
+      freeFallDetected = false;
+      delay(15000);
+    }
+  }
+
+  // Reset if no impact
+  if (freeFallDetected && (millis() - freeFallTime > 1500)) {
+    freeFallDetected = false;
+  }
+
+  prevAccel = accel;
+
+  delay(300);
+}
+
+
+
