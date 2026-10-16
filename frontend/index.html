@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Fall Detection Dashboard</title>
+  <style>
+    body {
+      font-family: Arial;
+      text-align: center;
+      background: #f4f4f4;
+    }
+    .card {
+      margin: 50px auto;
+      padding: 30px;
+      width: 350px;
+      background: white;
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.2);
+    }
+    .alert {
+      color: red;
+      font-size: 24px;
+      font-weight: bold;
+    }
+    .safe {
+      color: green;
+      font-size: 20px;
+    }
+    a {
+      display: block;
+      margin-top: 10px;
+      color: blue;
+    }
+
+    input, button {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px;
+  margin: 6px 0;
+}
+
+button {
+  background: #1677d2;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h2>Fall Detection System</h2>
+
+    <p id="status">Loading...</p>
+    <p id="time"></p>
+    <a id="mapLink" target="_blank"></a>
+
+
+
+<hr>
+<h3>Alert Recipients</h3>
+
+<form id="recipientForm">
+  <input
+    id="recipientName"
+    type="text"
+    placeholder="Recipient name"
+    required
+  >
+
+  <input
+    id="recipientEmail"
+    type="email"
+    placeholder="Email address"
+  >
+
+  <input
+    id="recipientPhone"
+    type="tel"
+    placeholder="Phone number, e.g. +919876543210"
+  >
+
+  <button type="submit">Add Recipient</button>
+</form>
+
+<p id="recipientMessage"></p>
+<ul id="recipientList"></ul>
+
+
+
+  </div>
+
+  <script>
+    
+async function fetchAlert() {
+  const statusElement = document.getElementById("status");
+  const timeElement = document.getElementById("time");
+  const link = document.getElementById("mapLink");
+
+  try {
+    const res = await fetch(`${API}/latest-alert`);
+
+    // No fall alert has been received yet
+    if (res.status === 404) {
+      statusElement.textContent = "🟢 No fall alert received yet";
+      statusElement.className = "safe";
+      timeElement.textContent = "";
+      link.removeAttribute("href");
+      link.textContent = "";
+      return;
+    }
+
+    if (!res.ok) {
+      throw new Error("Unable to fetch the latest alert");
+    }
+
+    const data = await res.json();
+
+    if (data.status === "FALL DETECTED") {
+      statusElement.textContent = "🚨 FALL DETECTED";
+      statusElement.className = "alert";
+    } else {
+      statusElement.textContent = "🟢 No Fall";
+      statusElement.className = "safe";
+    }
+
+    timeElement.textContent = data.created_at
+      ? "Time: " + new Date(data.created_at).toLocaleString()
+      : "";
+
+    if (data.latitude != null && data.longitude != null) {
+      const mapUrl =
+        `https://maps.google.com/?q=${data.latitude},${data.longitude}`;
+
+      link.href = mapUrl;
+      link.textContent = "View Location on Map";
+    } else {
+      link.removeAttribute("href");
+      link.textContent = "Location unavailable";
+    }
+
+  } catch (error) {
+    console.error("Alert loading error:", error);
+    statusElement.textContent = "⚠️ Cannot connect to the backend";
+    statusElement.className = "";
+  }
+
+
+    }
+
+
+
+    
+const API = "http://localhost:5000/api";
+
+document.getElementById("recipientForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const recipient = {
+    name: document.getElementById("recipientName").value.trim(),
+    email: document.getElementById("recipientEmail").value.trim(),
+    phone: document.getElementById("recipientPhone").value.trim()
+  };
+
+  try {
+    const response = await fetch(`${API}/recipients`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(recipient)
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || "Could not save recipient");
+    }
+
+    document.getElementById("recipientMessage").textContent =
+      "Recipient saved successfully!";
+
+    e.target.reset();
+    loadRecipients();
+  } catch (error) {
+    document.getElementById("recipientMessage").textContent =
+      error.message;
+  }
+});
+
+async function loadRecipients() {
+  try {
+    const response = await fetch(`${API}/recipients`);
+    if (!response.ok) throw new Error("Could not load recipients");
+
+    const recipients = await response.json();
+    const list = document.getElementById("recipientList");
+
+    list.replaceChildren();
+
+    recipients.forEach((recipient) => {
+      const item = document.createElement("li");
+      item.textContent = [
+        recipient.name,
+        recipient.email,
+        recipient.phone
+      ].filter(Boolean).join(" — ");
+
+      list.appendChild(item);
+    });
+  } catch (error) {
+    console.error("Recipient loading error:", error);
+  }
+}
+
+loadRecipients();
+
+
+ fetchAlert();   
+// Refresh every 3 seconds
+    setInterval(fetchAlert, 3000);
+   
+
+
+
+  </script>
+
+</body>
+</html>
